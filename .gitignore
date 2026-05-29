@@ -11,8 +11,12 @@ web/out/
 *.log
 
 # Local env files
-.env*.local
+.env*
+web/.env*
 web/.env*.local
+
+# Prisma generated client (do NOT commit)
+web/generated/prisma
 
 # Editor directories
 .idea/

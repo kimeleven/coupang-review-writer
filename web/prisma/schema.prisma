@@ -1,0 +1,40 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Product {
+  id            String   @id @default(cuid())
+  name          String
+  price         Int
+  category      String
+  coupangUrl    String
+  partnersUrl   String   @default("")
+  imageUrl      String?
+  rating        Float?
+  reviewCount   Int?
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  reviews       Review[]
+}
+
+model Review {
+  id            String   @id @default(cuid())
+  productId     String
+  productName   String
+  title         String
+  content       String   @db.Text
+  style         String
+  keywords      String[] // stored as text array
+  createdAt     DateTime @default(now())
+
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+}

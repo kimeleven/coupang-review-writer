@@ -10,6 +10,12 @@ import { toast } from 'sonner';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+// Server Actions (DB)
+import { 
+  getProducts, createProduct, deleteProduct,
+  getReviews, createReview, deleteReview 
+} from './actions';
+
 // ==================== TYPES ====================
 interface Product {
   id: string;
@@ -121,41 +127,71 @@ export default function CoupangReviewWriter() {
     notes: '',
   });
 
-  // ==================== PERSISTENCE ====================
+  // ==================== DATA LOADING FROM DB (Neon) ====================
+  const loadData = async () => {
+    try {
+      const [dbProducts, dbReviews] = await Promise.all([
+        getProducts(),
+        getReviews()
+      ]);
+
+      // Map DB types to our frontend types (dates as string for compatibility)
+      const mappedProducts: Product[] = dbProducts.map(p => ({
+        ...p,
+        createdAt: p.createdAt.toISOString(),
+        partnersUrl: p.partnersUrl || '',
+        imageUrl: p.imageUrl || undefined,
+        rating: p.rating || undefined,
+        reviewCount: p.reviewCount || undefined,
+        notes: p.notes || undefined,
+      }));
+      setProducts(mappedProducts);
+
+      const mappedReviews: SavedReview[] = dbReviews.map(r => ({
+        ...r,
+        createdAt: r.createdAt.toISOString(),
+      }));
+      setSavedReviews(mappedReviews);
+    } catch (error) {
+      console.error('Failed to load data from DB:', error);
+      toast.error('데이터베이스에서 데이터를 불러오지 못했습니다. .env의 DATABASE_URL을 확인하세요.');
+    }
+  };
+
   useEffect(() => {
-    const savedProducts = localStorage.getItem('coupang_products');
-    if (savedProducts) setProducts(JSON.parse(savedProducts));
+    loadData();
 
-    const savedReviewsData = localStorage.getItem('coupang_reviews');
-    if (savedReviewsData) setSavedReviews(JSON.parse(savedReviewsData));
-
+    // Load OpenAI key from localStorage (remains client-side, user's own key)
     const savedKey = localStorage.getItem('openai_api_key');
     if (savedKey) setOpenaiKey(savedKey);
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('coupang_products', JSON.stringify(products));
-  }, [products]);
-
-  useEffect(() => {
-    localStorage.setItem('coupang_reviews', JSON.stringify(savedReviews));
-  }, [savedReviews]);
-
-  useEffect(() => {
     if (openaiKey) localStorage.setItem('openai_api_key', openaiKey);
   }, [openaiKey]);
 
-  // ==================== PRODUCT FUNCTIONS ====================
-  const addProduct = (productData: Omit<Product, 'id' | 'createdAt'>) => {
-    const product: Product = {
-      ...productData,
-      id: Date.now().toString(36) + Math.random().toString(36).substr(2),
-      createdAt: new Date().toISOString(),
-    };
-    setProducts(prev => [product, ...prev]);
-    toast.success('상품이 추가되었습니다');
-    setIsAddModalOpen(false);
-    resetNewProductForm();
+  // ==================== PRODUCT FUNCTIONS (now with Neon DB) ====================
+  const addProduct = async (productData: Omit<Product, 'id' | 'createdAt'>) => {
+    try {
+      await createProduct({
+        name: productData.name,
+        price: productData.price,
+        category: productData.category,
+        coupangUrl: productData.coupangUrl,
+        partnersUrl: productData.partnersUrl,
+        imageUrl: productData.imageUrl,
+        rating: productData.rating,
+        reviewCount: productData.reviewCount,
+        notes: productData.notes,
+      });
+      await loadData(); // refresh from DB
+      toast.success('상품이 추가되었습니다');
+      setIsAddModalOpen(false);
+      resetNewProductForm();
+    } catch (error) {
+      console.error(error);
+      toast.error('상품 추가에 실패했습니다');
+    }
   };
 
   const resetNewProductForm = () => {
@@ -165,15 +201,20 @@ export default function CoupangReviewWriter() {
     });
   };
 
-  const deleteProduct = (id: string) => {
+  const handleDeleteProduct = async (id: string) => {
     if (!confirm('이 상품을 삭제하시겠습니까? 관련 리뷰는 유지됩니다.')) return;
-    setProducts(prev => prev.filter(p => p.id !== id));
-    if (selectedProduct?.id === id) {
-      setSelectedProduct(null);
-      setGeneratedTitle('');
-      setGeneratedContent('');
+    try {
+      await deleteProduct(id);
+      await loadData();
+      if (selectedProduct?.id === id) {
+        setSelectedProduct(null);
+        setGeneratedTitle('');
+        setGeneratedContent('');
+      }
+      toast.success('상품이 삭제되었습니다');
+    } catch (error) {
+      toast.error('삭제에 실패했습니다');
     }
-    toast.success('상품이 삭제되었습니다');
   };
 
   const quickAddPopular = (pop: typeof POPULAR_PRODUCTS[0]) => {
@@ -402,25 +443,27 @@ export default function CoupangReviewWriter() {
     }
   };
 
-  const saveCurrentReview = () => {
+  const saveCurrentReview = async () => {
     if (!selectedProduct || !generatedContent) {
       toast.error('저장할 내용이 없습니다');
       return;
     }
 
-    const review: SavedReview = {
-      id: Date.now().toString(36),
-      productId: selectedProduct.id,
-      productName: selectedProduct.name,
-      title: generatedTitle || selectedProduct.name + ' 리뷰',
-      content: generatedContent,
-      style: genOptions.style,
-      keywords: genOptions.keywords ? genOptions.keywords.split(',').map(k => k.trim()) : [],
-      createdAt: new Date().toISOString(),
-    };
-
-    setSavedReviews(prev => [review, ...prev]);
-    toast.success('리뷰가 저장되었습니다');
+    try {
+      await createReview({
+        productId: selectedProduct.id,
+        productName: selectedProduct.name,
+        title: generatedTitle || selectedProduct.name + ' 리뷰',
+        content: generatedContent,
+        style: genOptions.style,
+        keywords: genOptions.keywords ? genOptions.keywords.split(',').map(k => k.trim()) : [],
+      });
+      await loadData();
+      toast.success('리뷰가 DB에 저장되었습니다');
+    } catch (error) {
+      console.error(error);
+      toast.error('리뷰 저장에 실패했습니다');
+    }
   };
 
   const loadReview = (review: SavedReview) => {
@@ -435,10 +478,15 @@ export default function CoupangReviewWriter() {
     toast.info('저장된 리뷰를 불러왔습니다');
   };
 
-  const deleteReview = (id: string) => {
+  const handleDeleteReview = async (id: string) => {
     if (!confirm('이 리뷰 기록을 삭제할까요?')) return;
-    setSavedReviews(prev => prev.filter(r => r.id !== id));
-    toast.success('리뷰가 삭제되었습니다');
+    try {
+      await deleteReview(id);
+      await loadData();
+      toast.success('리뷰가 삭제되었습니다');
+    } catch (error) {
+      toast.error('삭제에 실패했습니다');
+    }
   };
 
   const copyToClipboard = async (text: string, label: string) => {
@@ -684,7 +732,7 @@ export default function CoupangReviewWriter() {
                         <Edit2 className="w-4 h-4" /> 리뷰 작성하기
                       </button>
                       <button onClick={() => { setSelectedProduct(product); setCurrentView('writer'); }} className="btn-ghost">선택</button>
-                      <button onClick={() => deleteProduct(product.id)} className="btn-ghost text-[#DC2626] hover:bg-red-50">
+                      <button onClick={() => handleDeleteProduct(product.id)} className="btn-ghost text-[#DC2626] hover:bg-red-50">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
@@ -900,7 +948,7 @@ export default function CoupangReviewWriter() {
                     </div>
                     <div className="flex flex-col gap-2 pt-1">
                       <button onClick={() => loadReview(review)} className="btn-primary text-sm py-1.5 px-5">불러오기</button>
-                      <button onClick={() => deleteReview(review.id)} className="btn-ghost text-red-600 text-sm">삭제</button>
+                      <button onClick={() => handleDeleteReview(review.id)} className="btn-ghost text-red-600 text-sm">삭제</button>
                     </div>
                   </div>
                 ))}

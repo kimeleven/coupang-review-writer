@@ -72,7 +72,7 @@ http://localhost:3000 에서 확인하세요.
 
 - **OpenAI 연동**: API 키만 넣으면 GPT-4o 수준의 자연스러운 한국어 리뷰 생성
 - **키 없어도 OK**: 강력한 템플릿 엔진 내장 (광고 문구 자동 포함)
-- **완전 로컬 저장**: 모든 데이터가 브라우저에만 저장 (서버 전송 없음)
+- **영구 저장 (Neon Postgres)**: 상품과 리뷰가 DB에 안전하게 저장됩니다 (로컬스토리지 → Neon 마이그레이션 완료)
 - **실전 최적화**: 실제 블로거들이 쓰는 스타일과 문장 패턴 반영
 
 ## ⚠️ 주의사항
@@ -80,6 +80,54 @@ http://localhost:3000 에서 확인하세요.
 - 쿠팡 파트너스 링크는 [쿠팡파트너스](https://partners.coupang.com) 대시보드에서 직접 생성해야 합니다. (로그인 필요)
 - 이 도구는 **콘텐츠 생성 보조** 도구이며, 최종 글은 반드시 본인이 검토 후 게시하세요.
 - 대한민국 전자상거래법 및 표시·광고법에 따라 **광고/제휴 게시물 표시**를 잊지 마세요.
+
+## 🗄️ 데이터베이스 + 배포 (Neon + Vercel)
+
+이 프로젝트는 **Neon Postgres** + **Vercel** 배포를 기준으로 설계되었습니다.
+
+### 1. Neon DB 생성
+
+1. [Neon](https://neon.tech) 가입 후 새 프로젝트 생성
+2. 생성된 **Connection string** 복사 (postgresql:// 로 시작하는 URL)
+
+### 2. 로컬에서 테스트
+
+```bash
+cd web
+cp .env.example .env
+# .env 파일에 DATABASE_URL 붙여넣기
+```
+
+```bash
+npm run dev
+```
+
+### 3. Prisma 마이그레이션 (최초 1회)
+
+```bash
+cd web
+npx prisma migrate dev --name init
+```
+
+### 4. Vercel 배포
+
+1. GitHub에 푸시되어 있는 상태여야 함
+2. [Vercel](https://vercel.com)에서 **New Project** → 이 저장소 선택
+3. **Environment Variables**에 추가:
+   - `DATABASE_URL` = Neon에서 복사한 전체 연결 문자열
+4. Deploy
+
+Vercel은 빌드 시 자동으로 `prisma generate`를 실행합니다.
+
+### 5. 데이터베이스 마이그레이션 (Vercel 배포 후)
+
+Vercel 배포 후에도 스키마를 변경했다면 로컬에서:
+
+```bash
+npx prisma migrate deploy
+```
+
+또는 Vercel에 별도의 "Prisma Migrate" 스크립트를 추가할 수 있습니다.
 
 ## 📄 라이선스
 
