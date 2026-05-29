@@ -26,3 +26,5 @@ web/generated/prisma
 
 # OS
 Thumbs.db
+
+.vercel

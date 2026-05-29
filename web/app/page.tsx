@@ -15,6 +15,7 @@ import {
   getProducts, createProduct, deleteProduct,
   getReviews, createReview, deleteReview 
 } from './actions';
+import { generateReviewWithGemini } from './actions/ai-generation';
 
 // ==================== TYPES ====================
 interface Product {
@@ -109,12 +110,11 @@ export default function CoupangReviewWriter() {
   });
   const [generatedTitle, setGeneratedTitle] = useState('');
   const [generatedContent, setGeneratedContent] = useState('');
+  const [imagePrompts, setImagePrompts] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [writerTab, setWriterTab] = useState<'edit' | 'preview'>('edit');
 
-  // Settings
-  const [openaiKey, setOpenaiKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
+  // No longer using external AI keys - Grok handles generation directly via this chat
 
   // Add product form
   const [newProduct, setNewProduct] = useState({
@@ -160,15 +160,7 @@ export default function CoupangReviewWriter() {
 
   useEffect(() => {
     loadData();
-
-    // Load OpenAI key from localStorage (remains client-side, user's own key)
-    const savedKey = localStorage.getItem('openai_api_key');
-    if (savedKey) setOpenaiKey(savedKey);
   }, []);
-
-  useEffect(() => {
-    if (openaiKey) localStorage.setItem('openai_api_key', openaiKey);
-  }, [openaiKey]);
 
   // ==================== PRODUCT FUNCTIONS (now with Neon DB) ====================
   const addProduct = async (productData: Omit<Product, 'id' | 'createdAt'>) => {
@@ -330,86 +322,64 @@ export default function CoupangReviewWriter() {
     return { title, content };
   };
 
-  const generateWithOpenAI = async (product: Product, opts: GenerationOptions): Promise<{ title: string; content: string }> => {
-    if (!openaiKey) {
-      throw new Error('OpenAI API 키가 설정되지 않았습니다. 설정에서 키를 입력해주세요.');
-    }
+  // ==================== GEMINI-BASED GENERATION ====================
+  // Using Gemini API (free tier friendly) for high-quality review generation.
+  // User sets GEMINI_API_KEY in Vercel environment variables.
 
+  const createGeminiPrompt = (product: Product, opts: GenerationOptions): string => {
+    const styleLabel = REVIEW_STYLES.find(s => s.value === opts.style)?.label || '';
     const styleDesc = REVIEW_STYLES.find(s => s.value === opts.style)?.desc || '';
-    const keywordsList = opts.keywords ? opts.keywords.split(',').map(k => k.trim()) : [];
+    const keywords = opts.keywords ? opts.keywords.split(',').map(k => k.trim()) : [product.name];
+    const platform = opts.platform === 'naver' ? '네이버 블로그' : '티스토리';
+    const lengthDesc = opts.length === 'short' ? '간단하고 명확하게 (800~1300자)' : 
+                       opts.length === 'medium' ? '적당한 분량으로 자세히 (1600~2300자)' : 
+                       '상세하고 깊이 있게 (2800자 이상)';
 
-    const systemPrompt = `당신은 한국에서 가장 유명한 쿠팡 제휴 리뷰 블로거입니다. 
-네이버 블로그와 티스토리에 올라가는 실제 판매 전환율이 높은 리뷰를 전문적으로 작성합니다.
+    return `당신은 한국에서 판매 전환율이 높은 쿠팡 제휴 리뷰를 전문으로 쓰는 블로거입니다.
 
-규칙:
-1. 자연스럽고 신뢰감 있는 구어체 한국어로 작성 (과도한 과장 금지)
-2. 장점과 단점을 솔직하게 균형 있게 다룸
-3. 구체적인 사용 디테일을 넣어 진짜 사용한 것처럼 작성
-4. 주요 키워드는 자연스럽게 3~5회 배치
-5. 반드시 마지막 또는 상단에 광고/제휴 문구 명시
-6. ${opts.platform === 'naver' ? '네이버 블로그' : '티스토리'} 에디터에 바로 붙여넣기 좋은 마크다운 형식
-7. 제목은 클릭률이 높으면서도 과하지 않게 작성`;
+아래 정보를 바탕으로 ${platform}에 최적화된 고품질 리뷰 글을 작성해주세요.
 
-    const userPrompt = `다음 상품에 대한 ${opts.platform === 'naver' ? '네이버 블로그' : '티스토리'} 리뷰를 작성해주세요.
-
-[상품 정보]
+**상품 정보**
 - 상품명: ${product.name}
 - 가격: ${product.price.toLocaleString()}원
 - 카테고리: ${product.category}
-- 평점: ${product.rating || '4.5'} (${product.reviewCount || 5000}개 리뷰)
+${product.rating ? `- 실제 사용자 평점: ${product.rating}점` : ''}
+${product.reviewCount ? `(${product.reviewCount.toLocaleString()}개 리뷰)` : ''}
+- 쿠팡 링크: ${product.coupangUrl}
+${product.partnersUrl ? `- 파트너스 링크: ${product.partnersUrl}` : ''}
 
-[작성 조건]
-- 스타일: ${styleDesc}
-- 주요 키워드: ${keywordsList.join(', ') || product.name}
-- 글 길이: ${opts.length}
-- 타겟 독자: ${opts.targetReader || '일반 사용자'}
-- 추가 지시: ${opts.extraInstructions || '없음'}
+**작성 조건**
+- 리뷰 스타일: ${styleLabel} — ${styleDesc}
+- 주요 키워드: ${keywords.join(', ')}
+- 글 길이: ${lengthDesc}
+${opts.targetReader ? `- 타겟 독자: ${opts.targetReader}` : ''}
+${opts.extraInstructions ? `- 추가 요청: ${opts.extraInstructions}` : ''}
 
-반드시 다음 형식을 지켜주세요:
-1. 첫 줄에 매력적인 제목 (이모지 적당히 사용 가능)
-2. 상단 또는 하단에 쿠팡파트너스 광고 문구
-3. 실제 사용한 듯한 구체적 표현 다수 포함
-4. 구매 링크는 반드시 "쿠팡에서 구매하기" 형태로 안내`;
+**글쓰기 규칙 (반드시 지켜주세요)**
+1. 자연스럽고 신뢰감 있는 구어체 한국어로 작성 (과장 금지)
+2. 장점과 단점을 솔직하게 균형 있게 다뤄주세요
+3. 실제로 사용한 것처럼 구체적인 디테일을 많이 넣어주세요
+4. 제목은 자연스럽고 클릭을 유도하는 스타일로
+5. 반드시 상단이나 하단에 쿠팡파트너스 광고 문구를 자연스럽게 포함 (예: 이 포스팅은 쿠팡 파트너스 활동의 일환으로...)
+6. 구매 링크는 파트너스 링크가 있으면 그걸 우선 사용
+7. ${platform} 에디터에 바로 붙여넣기 좋은 마크다운 형식으로 작성
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${openaiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: 0.75,
-        max_tokens: opts.length === 'long' ? 3200 : opts.length === 'medium' ? 2200 : 1400,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error?.message || `OpenAI API 오류 (${response.status})`);
-    }
-
-    const data = await response.json();
-    const raw = data.choices?.[0]?.message?.content || '';
-
-    // Parse title and content
-    const lines = raw.trim().split('\n');
-    let title = lines[0].replace(/^#+\s*/, '').trim();
-    let content = raw;
-
-    // If first line is too title-like, use it
-    if (title.length > 80) {
-      title = `${product.name} 실제 사용 후기`;
-    }
-
-    return { title, content };
+고품질의 자연스러운 리뷰 글을 작성해주세요.`;
   };
 
-  const handleGenerate = async () => {
+  const generateImagePrompts = (product: Product): string[] => {
+    const name = product.name;
+    return [
+      `${name}를 실제 생활에서 자연스럽게 사용하고 있는 장면, 따뜻한 자연광, 리얼한 한국 가정집 분위기`,
+      `클로즈업으로 담은 ${name}의 디테일과 질감, 고급스럽고 선명한 상품 사진 스타일`,
+      `${name}를 사용하는 행복하고 일상적인 순간, 감성적인 조명`,
+      `${name}의 장점을 강조하는 비교 이미지 (다른 제품 대비)`,
+      `${name} 관련 라이프스타일 사진, 사용자가 만족하는 모습`,
+      `${name}를 선물용으로 포장한 고급스러운 이미지`
+    ];
+  };
+
+  const handleGenerateReview = async () => {
     if (!selectedProduct) {
       toast.error('상품을 먼저 선택해주세요');
       return;
@@ -418,23 +388,22 @@ export default function CoupangReviewWriter() {
     setIsGenerating(true);
 
     try {
-      let result: { title: string; content: string };
-
-      if (openaiKey && openaiKey.startsWith('sk-')) {
-        result = await generateWithOpenAI(selectedProduct, genOptions);
-        toast.success('AI가 고품질 리뷰를 생성했습니다!');
-      } else {
-        result = generateReviewTemplate(selectedProduct, genOptions);
-        toast.success('템플릿 기반 리뷰가 생성되었습니다 (OpenAI 키 등록 시 더 고품질 생성 가능)');
-      }
-
+      const prompt = createGeminiPrompt(selectedProduct, genOptions);
+      
+      const result = await generateReviewWithGemini(prompt);
+      
       setGeneratedTitle(result.title);
       setGeneratedContent(result.content);
+      setImagePrompts(generateImagePrompts(selectedProduct));
       setWriterTab('edit');
+
+      toast.success('Gemini가 고품질 리뷰를 생성했습니다!');
+
     } catch (error: any) {
       console.error(error);
-      toast.error(error.message || '생성 중 오류가 발생했습니다. 템플릿으로 대체합니다.');
-      // Fallback to template
+      toast.error(error.message || 'Gemini 생성 중 오류가 발생했습니다. 템플릿으로 대체합니다.');
+      
+      // Fallback to local template
       const fallback = generateReviewTemplate(selectedProduct, genOptions);
       setGeneratedTitle(fallback.title);
       setGeneratedContent(fallback.content);
@@ -529,6 +498,7 @@ export default function CoupangReviewWriter() {
   const clearGenerated = () => {
     setGeneratedTitle('');
     setGeneratedContent('');
+    setImagePrompts([]);
   };
 
   // ==================== RENDER ====================
@@ -849,13 +819,16 @@ export default function CoupangReviewWriter() {
                       </div>
 
                       <button 
-                        onClick={handleGenerate} 
-                        disabled={isGenerating} 
+                        onClick={handleGenerateReview} 
+                        disabled={isGenerating}
                         className="btn-primary w-full mt-6 py-3 text-base disabled:opacity-70"
                       >
-                        {isGenerating ? 'AI가 리뷰를 작성 중입니다...' : (openaiKey ? '🤖 AI로 고품질 리뷰 생성' : '📝 템플릿으로 리뷰 생성')}
+                        {isGenerating ? 'Gemini가 리뷰를 작성 중입니다...' : '✨ Gemini로 고품질 리뷰 생성하기'}
                       </button>
-                      {!openaiKey && <p className="text-[12px] text-center mt-2 text-[#A3A3A3]">설정에서 OpenAI 키를 등록하면 훨씬 더 자연스러운 글이 나옵니다</p>}
+                      <p className="text-[12px] text-center mt-2 text-[#737373]">
+                        Gemini 1.5 Flash (무료 티어)를 사용합니다.<br />
+                        생성 후 이미지 프롬프트도 별도로 만들어드릴게요.
+                      </p>
                     </div>
 
                     <div className="card p-5 text-sm text-[#525252]">
@@ -920,6 +893,34 @@ export default function CoupangReviewWriter() {
                         </div>
                       )}
                     </div>
+
+                    {/* Image Prompts Section */}
+                    {imagePrompts.length > 0 && (
+                      <div className="card p-6 mt-4">
+                        <div className="font-semibold mb-3 flex items-center gap-2">
+                          📷 리뷰에 사용할 이미지 프롬프트 ({imagePrompts.length}개)
+                        </div>
+                        <div className="space-y-2 text-sm">
+                          {imagePrompts.map((prompt, index) => (
+                            <div key={index} className="p-3 bg-[#F8F8F8] rounded-lg border border-[#E5E5E5]">
+                              {index + 1}. {prompt}
+                            </div>
+                          ))}
+                        </div>
+                        <button 
+                          onClick={() => {
+                            const allPrompts = imagePrompts.map((p, i) => `${i+1}. ${p}`).join('\n\n');
+                            copyToClipboard(allPrompts, '이미지 프롬프트');
+                          }}
+                          className="btn-secondary mt-4 w-full text-sm"
+                        >
+                          모든 이미지 프롬프트 복사하기
+                        </button>
+                        <p className="text-[11px] text-[#A3A3A3] mt-2 text-center">
+                          위 프롬프트를 Grok, Flux, Midjourney 등에 붙여넣어 사용하세요.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </>
@@ -961,34 +962,26 @@ export default function CoupangReviewWriter() {
         {currentView === 'settings' && (
           <div className="max-w-xl">
             <h1 className="text-3xl font-bold tracking-tight mb-2">설정</h1>
-            <p className="text-[#737373] mb-8">OpenAI 키를 등록하면 훨씬 더 자연스럽고 판매 전환율이 높은 리뷰를 생성할 수 있습니다.</p>
+            <p className="text-[#737373] mb-8">리뷰 생성은 Google Gemini API를 사용합니다 (무료 티어 충분).</p>
 
-            <div className="card p-7">
-              <div className="font-semibold mb-2">OpenAI API Key</div>
-              <p className="text-sm text-[#737373] mb-4">gpt-4o-mini 모델을 사용합니다. 키는 브라우저 localStorage에만 저장됩니다.</p>
-
-              <div className="relative">
-                <input 
-                  type={showKey ? "text" : "password"} 
-                  className="input pr-20 font-mono text-sm" 
-                  placeholder="sk-..." 
-                  value={openaiKey} 
-                  onChange={e => setOpenaiKey(e.target.value)} 
-                />
-                <button onClick={() => setShowKey(!showKey)} className="absolute right-3 top-3 text-xs font-medium text-[#525252]">
-                  {showKey ? '숨기기' : '보기'}
-                </button>
-              </div>
-
-              <div className="flex gap-3 mt-4">
-                <button onClick={() => { localStorage.removeItem('openai_api_key'); setOpenaiKey(''); toast.info('API 키가 삭제되었습니다'); }} className="btn-secondary flex-1">키 삭제</button>
-                <button onClick={() => { if (openaiKey) toast.success('API 키가 저장되었습니다'); }} className="btn-primary flex-1">저장</button>
-              </div>
+            <div className="card p-7 mb-6">
+              <div className="font-semibold mb-3">Gemini API 키 설정 방법</div>
+              <ol className="text-sm text-[#525252] space-y-2 list-decimal pl-5">
+                <li><a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-[#E85D04] underline">Google AI Studio</a>에서 무료 API 키 발급</li>
+                <li>Vercel 프로젝트 → Settings → Environment Variables</li>
+                <li>Name: <code className="bg-[#F5F5F5] px-1">GEMINI_API_KEY</code></li>
+                <li>Value에 발급받은 키 붙여넣기 후 저장</li>
+                <li>Redeploy</li>
+              </ol>
             </div>
 
-            <div className="mt-8 text-xs text-[#A3A3A3] leading-relaxed">
-              API 키가 없어도 템플릿 기반으로 충분히 좋은 품질의 리뷰를 생성할 수 있습니다.<br />
-              OpenAI 키는 <a href="https://platform.openai.com/api-keys" target="_blank" className="underline">platform.openai.com</a> 에서 발급받으실 수 있습니다.
+            <div className="card p-7">
+              <div className="font-semibold mb-2">현재 구조</div>
+              <div className="text-sm text-[#525252] leading-relaxed">
+                <p>• 리뷰 본문: Gemini 1.5 Flash (무료)</p>
+                <p>• 이미지: 직접 생성 대신 고품질 프롬프트 제공</p>
+                <p>• 데이터: Neon Postgres에 저장</p>
+              </div>
             </div>
           </div>
         )}
